@@ -87,16 +87,43 @@ function makeRagdoll(x, y, color) {
     new Stick(pts.head, pts.hip, 0.15),
   ];
 
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
   return {
     id: Math.random().toString(36).slice(2),
     pts, bones, color,
     mode: 'dance',
     style: state.style.dance,
     phase: Math.random() * Math.PI * 2,
-    speed: 0.9 + Math.random() * 0.4,
+    speed: 0.85 + Math.random() * 0.35,
     emoteStart: 0,
     poseHold: 0,
+    baseX: x, baseY: y + 70, // hip resting position, used as the dance anchor
+    lens: {
+      neck: dist(pts.head, pts.neck),
+      spine: dist(pts.neck, pts.hip),
+      upperArm: dist(pts.neck, pts.lElbow),
+      foreArm: dist(pts.lElbow, pts.lHand),
+      thigh: dist(pts.hip, pts.lKnee),
+      shin: dist(pts.lKnee, pts.lFoot),
+    },
   };
+}
+
+// Move a point toward a world-space target. Keeps a little bit of the
+// point's momentum so it still has a soft, springy "ragdoll" feel instead
+// of snapping rigidly to the pose every frame.
+function driveToward(p, tx, ty, pull) {
+  const nx = p.x + (tx - p.x) * pull;
+  const ny = p.y + (ty - p.y) * pull;
+  p.ox = p.x + (nx - p.x) * 0.55;
+  p.oy = p.y + (ny - p.y) * 0.55;
+  p.x = nx;
+  p.y = ny;
+}
+
+function polar(origin, angle, len) {
+  return { x: origin.x + Math.cos(angle) * len, y: origin.y + Math.sin(angle) * len };
 }
 
 function spawnRagdolls(n) {
@@ -185,60 +212,138 @@ function resolveInterRagdollCollisions() {
 // ---------------------------------------------------------
 // Behaviors: dance / pose / emote
 // ---------------------------------------------------------
+// Full-body kinematic dance driver. Every joint gets an explicit target
+// position each frame (computed from time + music beat), and driveToward()
+// eases the physical point toward it — big, clearly visible motion, with
+// just enough spring left in the verlet solver for a soft ragdoll feel.
 function applyDance(rd, t) {
   const beat = state.beat;
-  const amp = 10 + beat * 26;
+  const energy = 1 + beat * 0.9;
   const speed = rd.speed;
+  const ph = rd.phase;
   const s = rd.style;
+  const L = rd.lens;
+  const w = t * speed + ph;
 
-  const swing = Math.sin(t * speed * 4 + rd.phase);
-  const swingOpp = Math.sin(t * speed * 4 + rd.phase + Math.PI);
+  let hipX = rd.baseX, hipY = rd.baseY;
+  let leanAngle = -Math.PI / 2; // spine pointing up by default
+  let armL, armR, elbowBendL, elbowBendR, legL, legR, kneeBendL, kneeBendR;
 
   if (s === 'Bounce') {
-    rd.pts.hip.y += Math.sin(t * speed * 6 + rd.phase) * (0.6 + beat * 1.2);
-    rd.pts.lHand.x += swing * amp * 0.03;
-    rd.pts.lHand.y -= Math.abs(swing) * amp * 0.05;
-    rd.pts.rHand.x += swingOpp * amp * 0.03;
-    rd.pts.rHand.y -= Math.abs(swingOpp) * amp * 0.05;
+    hipY = rd.baseY - Math.abs(Math.sin(w * 3)) * (16 + beat * 22);
+    hipX = rd.baseX + Math.sin(w) * 6;
+    leanAngle = -Math.PI / 2 + Math.sin(w * 3) * 0.12;
+    armL = Math.PI * 0.85 + Math.sin(w * 3) * (0.85 * energy);
+    armR = Math.PI * 0.15 - Math.sin(w * 3 + Math.PI) * (0.85 * energy);
+    elbowBendL = 0.5; elbowBendR = -0.5;
+    legL = Math.PI / 2 + Math.sin(w * 3) * 0.18;
+    legR = Math.PI / 2 + Math.sin(w * 3 + Math.PI) * 0.18;
+    kneeBendL = 0.15; kneeBendR = -0.15;
   } else if (s === 'Robot') {
-    const step = Math.floor(t * speed * 3) % 2 === 0 ? 1 : -1;
-    rd.pts.lElbow.x += step * 0.6;
-    rd.pts.rElbow.x -= step * 0.6;
-    rd.pts.lHand.y -= 0.4;
-    rd.pts.rHand.y -= 0.4;
-    rd.pts.head.x += Math.sign(Math.sin(t * speed * 2)) * 0.15;
+    const step = Math.sign(Math.sin(w * 2.6)) || 1;
+    hipX = rd.baseX + step * 10;
+    hipY = rd.baseY - 4;
+    leanAngle = -Math.PI / 2 + step * 0.1;
+    armL = step > 0 ? -Math.PI * 0.5 : Math.PI * 0.85;
+    armR = step > 0 ? Math.PI * 0.15 : -Math.PI * 0.35;
+    elbowBendL = -0.9; elbowBendR = 0.9;
+    legL = Math.PI / 2 - step * 0.25;
+    legR = Math.PI / 2 + step * 0.25;
+    kneeBendL = step > 0 ? -0.5 : 0.05;
+    kneeBendR = step > 0 ? 0.05 : -0.5;
   } else if (s === 'Wiggle') {
-    rd.pts.hip.x += swing * amp * 0.04;
-    rd.pts.head.x -= swing * amp * 0.02;
-    rd.pts.lFoot.x -= swing * amp * 0.02;
-    rd.pts.rFoot.x += swing * amp * 0.02;
-  } else { // Freestyle
-    rd.pts.lHand.x += Math.sin(t * 3.1 + rd.phase) * amp * 0.03;
-    rd.pts.lHand.y += Math.cos(t * 2.3 + rd.phase) * amp * 0.03;
-    rd.pts.rHand.x += Math.cos(t * 2.7 + rd.phase) * amp * 0.03;
-    rd.pts.rHand.y += Math.sin(t * 3.4 + rd.phase) * amp * 0.03;
-    rd.pts.hip.y += Math.sin(t * speed * 5 + rd.phase) * (0.5 + beat);
+    hipX = rd.baseX + Math.sin(w * 2) * (22 + beat * 10);
+    hipY = rd.baseY - Math.abs(Math.sin(w * 4)) * 6;
+    leanAngle = -Math.PI / 2 - Math.sin(w * 2) * 0.35;
+    armL = Math.PI * 0.7 - Math.sin(w * 2) * 0.3;
+    armR = Math.PI * 0.3 - Math.sin(w * 2) * 0.3;
+    elbowBendL = 0.35; elbowBendR = -0.35;
+    legL = Math.PI / 2 + Math.sin(w * 2) * 0.1;
+    legR = Math.PI / 2 - Math.sin(w * 2) * 0.1;
+    kneeBendL = 0.1; kneeBendR = -0.1;
+  } else { // Freestyle — layered frequencies so the crowd looks less synced
+    hipY = rd.baseY - Math.abs(Math.sin(w * 3.2)) * (14 + beat * 20);
+    hipX = rd.baseX + Math.sin(w * 1.3) * 14;
+    leanAngle = -Math.PI / 2 + Math.sin(w * 1.7) * 0.25;
+    armL = Math.PI * 0.75 + Math.sin(w * 3.4) * (1.0 * energy);
+    armR = Math.PI * 0.25 + Math.cos(w * 2.9) * (1.0 * energy);
+    elbowBendL = Math.sin(w * 4) * 0.6;
+    elbowBendR = Math.cos(w * 3.3) * 0.6;
+    legL = Math.PI / 2 + Math.sin(w * 2.4) * 0.3;
+    legR = Math.PI / 2 + Math.cos(w * 2.1) * 0.3;
+    kneeBendL = Math.sin(w * 2.4) * 0.3;
+    kneeBendR = Math.cos(w * 2.1) * -0.3;
   }
+
+  const pull = 0.4;
+  driveToward(rd.pts.hip, hipX, hipY, pull);
+
+  const neckTarget = polar(rd.pts.hip, leanAngle, L.spine);
+  driveToward(rd.pts.neck, neckTarget.x, neckTarget.y, pull);
+
+  const headTarget = polar(rd.pts.neck, leanAngle, L.neck);
+  driveToward(rd.pts.head, headTarget.x, headTarget.y, pull);
+
+  const lElbowT = polar(rd.pts.neck, armL, L.upperArm);
+  driveToward(rd.pts.lElbow, lElbowT.x, lElbowT.y, pull);
+  const lHandT = polar(lElbowT, armL + elbowBendL, L.foreArm);
+  driveToward(rd.pts.lHand, lHandT.x, lHandT.y, pull);
+
+  const rElbowT = polar(rd.pts.neck, armR, L.upperArm);
+  driveToward(rd.pts.rElbow, rElbowT.x, rElbowT.y, pull);
+  const rHandT = polar(rElbowT, armR + elbowBendR, L.foreArm);
+  driveToward(rd.pts.rHand, rHandT.x, rHandT.y, pull);
+
+  const lKneeT = polar(rd.pts.hip, legL, L.thigh);
+  driveToward(rd.pts.lKnee, lKneeT.x, lKneeT.y, pull);
+  const lFootT = polar(lKneeT, legL + kneeBendL, L.shin);
+  driveToward(rd.pts.lFoot, lFootT.x, lFootT.y, pull);
+
+  const rKneeT = polar(rd.pts.hip, legR, L.thigh);
+  driveToward(rd.pts.rKnee, rKneeT.x, rKneeT.y, pull);
+  const rFootT = polar(rKneeT, legR + kneeBendR, L.shin);
+  driveToward(rd.pts.rFoot, rFootT.x, rFootT.y, pull);
 }
 
+// Pose targets are joint angles (radians) from each limb's origin, so the
+// elbows/knees bend correctly instead of just floating the hands/feet.
 const POSE_TARGETS = {
-  TPose:     { lHand: [-58, 0], rHand: [58, 0], lFoot: [-16, 76], rFoot: [16, 76] },
-  SitDown:   { lHand: [-30, 30], rHand: [30, 30], lFoot: [-30, 30], rFoot: [30, 30] },
-  Superhero: { lHand: [-14, -40], rHand: [46, -6], lFoot: [-20, 76], rFoot: [16, 76] },
-  Relaxed:   { lHand: [-30, 46], rHand: [30, 46], lFoot: [-18, 76], rFoot: [18, 76] },
+  TPose:     { armL: Math.PI,        armR: 0,             elbowL: 0,     elbowR: 0,     legL: Math.PI/2 - 0.15, legR: Math.PI/2 + 0.15, kneeL: 0,    kneeR: 0 },
+  SitDown:   { armL: Math.PI*0.6,    armR: Math.PI*0.4,   elbowL: 0.6,   elbowR: -0.6,  legL: Math.PI*0.25,     legR: Math.PI*0.75,     kneeL: 1.4,  kneeR: -1.4 },
+  Superhero: { armL: -Math.PI*0.55,  armR: Math.PI*0.15,  elbowL: -0.2,  elbowR: -0.9,  legL: Math.PI/2 - 0.3,  legR: Math.PI/2 + 0.15, kneeL: 0,    kneeR: 0.1 },
+  Relaxed:   { armL: Math.PI*0.65,   armR: Math.PI*0.35,  elbowL: 0.25,  elbowR: -0.25, legL: Math.PI/2 - 0.1,  legR: Math.PI/2 + 0.1,  kneeL: 0.05, kneeR: -0.05 },
 };
+
 function applyPose(rd) {
   const target = POSE_TARGETS[rd.style] || POSE_TARGETS.TPose;
-  const anchor = rd.pts.neck;
-  const pull = 0.06;
-  for (const key of ['lHand', 'rHand', 'lFoot', 'rFoot']) {
-    const p = rd.pts[key];
-    const base = key.includes('Foot') ? rd.pts.hip : anchor;
-    const [ox, oy] = target[key];
-    const tx = base.x + ox, ty = base.y + oy;
-    p.x += (tx - p.x) * pull;
-    p.y += (ty - p.y) * pull;
-  }
+  const L = rd.lens;
+  const pull = 0.18;
+
+  driveToward(rd.pts.hip, rd.baseX, rd.baseY, pull);
+  const neckT = polar(rd.pts.hip, -Math.PI / 2, L.spine);
+  driveToward(rd.pts.neck, neckT.x, neckT.y, pull);
+  const headT = polar(rd.pts.neck, -Math.PI / 2, L.neck);
+  driveToward(rd.pts.head, headT.x, headT.y, pull);
+
+  const lElbowT = polar(rd.pts.neck, target.armL, L.upperArm);
+  driveToward(rd.pts.lElbow, lElbowT.x, lElbowT.y, pull);
+  const lHandT = polar(lElbowT, target.armL + target.elbowL, L.foreArm);
+  driveToward(rd.pts.lHand, lHandT.x, lHandT.y, pull);
+
+  const rElbowT = polar(rd.pts.neck, target.armR, L.upperArm);
+  driveToward(rd.pts.rElbow, rElbowT.x, rElbowT.y, pull);
+  const rHandT = polar(rElbowT, target.armR + target.elbowR, L.foreArm);
+  driveToward(rd.pts.rHand, rHandT.x, rHandT.y, pull);
+
+  const lKneeT = polar(rd.pts.hip, target.legL, L.thigh);
+  driveToward(rd.pts.lKnee, lKneeT.x, lKneeT.y, pull);
+  const lFootT = polar(lKneeT, target.legL + target.kneeL, L.shin);
+  driveToward(rd.pts.lFoot, lFootT.x, lFootT.y, pull);
+
+  const rKneeT = polar(rd.pts.hip, target.legR, L.thigh);
+  driveToward(rd.pts.rKnee, rKneeT.x, rKneeT.y, pull);
+  const rFootT = polar(rKneeT, target.legR + target.kneeR, L.shin);
+  driveToward(rd.pts.rFoot, rFootT.x, rFootT.y, pull);
 }
 
 function applyEmote(rd, t) {
