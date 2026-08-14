@@ -318,20 +318,39 @@ function applyDance(rd, t) {
     armR = Math.PI * 0.3 - Math.sin(w * 2) * 0.3;
     elbowBendL = 0.35; elbowBendR = -0.35;
     footLx = rd.baseX - stance; footRx = rd.baseX + stance;
-  } else { // Freestyle — alternating foot taps/kicks, looser arms
-    hipY = rd.baseY - Math.abs(Math.sin(w * 3.2)) * (8 + beat * 12);
-    hipX = rd.baseX + Math.sin(w * 1.3) * 12;
-    leanAngle = -Math.PI / 2 + Math.sin(w * 1.7) * 0.2;
-    armL = Math.PI * 0.75 + Math.sin(w * 3.4) * (1.0 * energy);
-    armR = Math.PI * 0.25 + Math.cos(w * 2.9) * (1.0 * energy);
-    elbowBendL = Math.sin(w * 4) * 0.6;
-    elbowBendR = Math.cos(w * 3.3) * 0.6;
-    const liftL = Math.max(0, Math.sin(w * 2.4)) * 24;
-    const liftR = Math.max(0, -Math.sin(w * 2.1)) * 24;
-    footLx = hipX - stance + Math.sin(w * 2.4) * 8;
-    footRx = hipX + stance + Math.cos(w * 2.1) * 8;
-    footLy = floorY - liftL;
-    footRy = floorY - liftR;
+  } else { // Freestyle — big, snappy hype-dance hits: sharp lunges, driven
+    // knees, fully-extended arm swings, punctuated with a wide pop pose.
+    // Poses snap in fast then hold briefly, like a real dancer hitting a
+    // beat, instead of smoothly oscillating.
+    const cycleLen = 1.05 / speed;
+    const localT = t + ph * 0.3;
+    const idx = Math.floor(localT / cycleLen) % 4;
+    const frac = (localT % cycleLen) / cycleLen;
+    const snap = Math.min(1, frac * 6); // fast ease-in, then holds the pose
+
+    const KF = [
+      // lunge right: left knee drives up, right leg planted, arms cross-swing
+      { lean: 0.5, armL: -1.95, armR: 0.55, elbowL: -0.6, elbowR: 0.5,
+        footL: { x: 4,   y: -36 }, footR: { x: 30, y: 0 } },
+      // wide pop: both feet planted wide, arms thrown up and out
+      { lean: 0, armL: -Math.PI * 0.7, armR: -Math.PI * 0.3, elbowL: -0.15, elbowR: 0.15,
+        footL: { x: -34, y: -6 }, footR: { x: 34, y: -6 } },
+      // lunge left: mirror of the first
+      { lean: -0.5, armL: -0.55, armR: 1.95, elbowL: -0.5, elbowR: 0.6,
+        footL: { x: -30, y: 0 }, footR: { x: -4, y: -36 } },
+      // low crouch hit: deep bend, head drops toward the front knee
+      { lean: 0.75, armL: -1.3, armR: 0.9, elbowL: -0.8, elbowR: 0.7,
+        footL: { x: 10, y: -8 }, footR: { x: 26, y: -6 } },
+    ];
+    const k = KF[idx];
+    leanAngle = -Math.PI / 2 + k.lean * snap;
+    armL = k.armL * snap - Math.PI * 0.85 * (1 - snap);
+    armR = k.armR * snap + Math.PI * 0.15 * (1 - snap);
+    elbowBendL = k.elbowL; elbowBendR = k.elbowR;
+    hipX = rd.baseX + Math.sin(w * 1.1) * 6;
+    hipY = rd.baseY - snap * (idx === 1 ? 12 : 4) * energy;
+    footLx = hipX + k.footL.x * snap; footLy = floorY + k.footL.y * snap;
+    footRx = hipX + k.footR.x * snap; footRy = floorY + k.footR.y * snap;
   }
 
   const pull = 0.4;
