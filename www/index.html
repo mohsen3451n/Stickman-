@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<title>Stickman Ragdoll</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <div id="app">
+    <canvas id="stage"></canvas>
+
+    <!-- Top scrollable tab bar -->
+    <div class="tab-bar-wrap">
+      <div class="tab-bar" id="tabBar">
+        <button class="tab" data-tab="emote">Emote</button>
+        <button class="tab active" data-tab="dance">Dance</button>
+        <button class="tab" data-tab="pose">Pose</button>
+        <button class="tab" data-tab="options">Options</button>
+      </div>
+    </div>
+
+    <!-- Panel: number of stickmen (shown for dance/pose/emote) -->
+    <div class="panel" id="countPanel">
+      <div class="panel-title">Number of Stickmen</div>
+      <input type="range" id="countSlider" min="1" max="10" value="3" />
+      <div class="panel-value" id="countValue">3</div>
+      <div class="panel-footer">Stickman Ragdoll v1</div>
+    </div>
+
+    <!-- Panel: sub-buttons for the active tab (dance styles / poses / emotes) -->
+    <div class="chip-row" id="chipRow"></div>
+
+    <!-- Options panel -->
+    <div class="panel" id="optionsPanel" style="display:none;">
+      <div class="panel-title">Options</div>
+
+      <button class="option-btn" id="musicBtn">🎵 Choose Music From Device</button>
+      <div class="option-row" id="musicName">No track selected</div>
+
+      <div class="option-row">
+        <span>Play / Pause</span>
+        <button class="mini-btn" id="playPauseBtn">▶</button>
+      </div>
+
+      <div class="option-row">
+        <span>Volume</span>
+        <input type="range" id="volumeSlider" min="0" max="1" step="0.01" value="0.8" />
+      </div>
+
+      <div class="option-row">
+        <span>Gravity</span>
+        <input type="range" id="gravitySlider" min="0" max="2" step="0.05" value="1" />
+      </div>
+    </div>
+
+    <!-- Never Touch pill toggle, always visible above bottom -->
+    <button class="never-touch" id="neverTouchBtn">
+      Never Touch:<br /><span id="neverTouchState">OFF</span>
+    </button>
+
+    <input type="file" id="audioFileInput" accept="audio/*" style="display:none;" />
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
