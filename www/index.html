@@ -53,12 +53,14 @@
         <span>Gravity</span>
         <input type="range" id="gravitySlider" min="0" max="2" step="0.05" value="1" />
       </div>
-    </div>
 
-    <!-- Never Touch pill toggle, always visible above bottom -->
-    <button class="never-touch" id="neverTouchBtn">
-      Never Touch:<br /><span id="neverTouchState">OFF</span>
-    </button>
+      <div class="option-row">
+        <span>Never Touch</span>
+        <button class="toggle-btn" id="neverTouchBtn">
+          <span id="neverTouchState">OFF</span>
+        </button>
+      </div>
+    </div>
 
     <input type="file" id="audioFileInput" accept="audio/*" style="display:none;" />
   </div>
