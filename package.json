@@ -1,0 +1,16 @@
+{
+  "name": "stickman-ragdoll",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dancing ragdoll stickmen app",
+  "scripts": {
+    "sync": "cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/core": "^6.1.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.2"
+  }
+}

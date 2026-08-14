@@ -1,0 +1,9 @@
+{
+  "appId": "com.stickman.ragdoll",
+  "appName": "Stickman Ragdoll",
+  "webDir": "www",
+  "bundledWebRuntime": false,
+  "android": {
+    "allowMixedContent": true
+  }
+}
