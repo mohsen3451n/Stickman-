@@ -137,6 +137,14 @@ html, body {
   background: #f4e11a;
 }
 
+/* ---- Collapsed UI (double-tap a tab to toggle) ---- */
+/* Keeps only the top tab bar visible so the stage isn't covered. */
+#app.ui-collapsed #countPanel,
+#app.ui-collapsed #chipRow,
+#app.ui-collapsed #optionsPanel {
+  display: none !important;
+}
+
 /* ---- Options panel ---- */
 #optionsPanel {
   top: 130px;
