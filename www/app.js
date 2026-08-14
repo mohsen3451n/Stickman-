@@ -13,7 +13,7 @@ function resize() {
   canvas.style.height = window.innerHeight + 'px';
   ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
 }
-window.addEventListener('resize', resize);
+window.addEventListener('resize', onResize);
 resize();
 
 // ---------------------------------------------------------
@@ -98,7 +98,7 @@ function makeRagdoll(x, y, color) {
     speed: 0.85 + Math.random() * 0.35,
     emoteStart: 0,
     poseHold: 0,
-    baseX: x, baseY: y + 70, // hip resting position, used as the dance anchor
+    baseX: x, baseY: y + 70, // hip resting position, used as the dance anchor (fixed up below)
     lens: {
       neck: dist(pts.head, pts.neck),
       spine: dist(pts.neck, pts.hip),
@@ -109,6 +109,8 @@ function makeRagdoll(x, y, color) {
     },
   };
 }
+
+
 
 // Move a point toward a world-space target. Keeps a little bit of the
 // point's momentum so it still has a soft, springy "ragdoll" feel instead
@@ -126,6 +128,25 @@ function polar(origin, angle, len) {
   return { x: origin.x + Math.cos(angle) * len, y: origin.y + Math.sin(angle) * len };
 }
 
+// Two-bone inverse kinematics: given a hip position and a desired foot
+// position, find where the knee needs to be so the foot actually reaches
+// that spot (instead of guessing a fixed knee angle and hoping the foot
+// lands near the floor). This is what lets feet stay planted on the
+// ground during a dance instead of floating.
+function solveKnee(hipX, hipY, footX, footY, thigh, shin, side) {
+  const dx = footX - hipX, dy = footY - hipY;
+  let dist = Math.hypot(dx, dy) || 0.0001;
+  const maxDist = thigh + shin - 0.5;
+  const minDist = Math.max(4, Math.abs(thigh - shin) + 0.5);
+  if (dist > maxDist) dist = maxDist;
+  if (dist < minDist) dist = minDist;
+  const cosA = (thigh * thigh + dist * dist - shin * shin) / (2 * thigh * dist);
+  const a = Math.acos(Math.max(-1, Math.min(1, cosA)));
+  const baseAngle = Math.atan2(dy, dx);
+  const angle = baseAngle + side * a; // side: +1 left leg, -1 right leg
+  return { x: hipX + Math.cos(angle) * thigh, y: hipY + Math.sin(angle) * thigh };
+}
+
 function spawnRagdolls(n) {
   ragdolls = [];
   const colors = ['#ffffff', '#d8d8d8', '#b9c2e0', '#e7e7e7', '#c9cfe8'];
@@ -133,10 +154,32 @@ function spawnRagdolls(n) {
   const startX = W() / 2 - (spacing * (n - 1)) / 2;
   for (let i = 0; i < n; i++) {
     const rd = makeRagdoll(startX + i * spacing, H() * 0.35, colors[i % colors.length]);
+    groundRagdoll(rd);
     rd.mode = state.tab === 'options' ? 'dance' : state.tab;
     rd.style = state.style[rd.mode] || 'Bounce';
     ragdolls.push(rd);
   }
+}
+
+// Shifts a ragdoll vertically so its feet rest on the floor line (instead
+// of floating at whatever arbitrary height it was created at), and records
+// that height as its standing "home" position (rd.baseY) for dance/pose to
+// return to. Called on spawn and again whenever the screen is resized.
+function groundRagdoll(rd) {
+  const floorY = H() - FLOOR_MARGIN;
+  const legLen = rd.lens.thigh + rd.lens.shin;
+  const standHipY = floorY - legLen * 0.94; // slightly bent knees, like a real stance
+  const dy = standHipY - rd.pts.hip.y;
+  for (const key in rd.pts) {
+    rd.pts[key].y += dy;
+    rd.pts[key].oy += dy;
+  }
+  rd.baseY = standHipY;
+}
+
+function onResize() {
+  resize();
+  for (const rd of ragdolls) groundRagdoll(rd);
 }
 
 // ---------------------------------------------------------
@@ -225,54 +268,70 @@ function applyDance(rd, t) {
   const L = rd.lens;
   const w = t * speed + ph;
 
+  const floorY = H() - FLOOR_MARGIN;
+  const stance = 20; // half distance between the feet when standing
+
   let hipX = rd.baseX, hipY = rd.baseY;
   let leanAngle = -Math.PI / 2; // spine pointing up by default
-  let armL, armR, elbowBendL, elbowBendR, legL, legR, kneeBendL, kneeBendR;
+  let armL, armR, elbowBendL, elbowBendR;
+  // Feet are given explicit world-space targets (not angles), so IK below
+  // can plant them on the floor exactly instead of letting them float.
+  let footLx = rd.baseX - stance, footLy = floorY;
+  let footRx = rd.baseX + stance, footRy = floorY;
 
   if (s === 'Bounce') {
-    hipY = rd.baseY - Math.abs(Math.sin(w * 3)) * (16 + beat * 22);
-    hipX = rd.baseX + Math.sin(w) * 6;
-    leanAngle = -Math.PI / 2 + Math.sin(w * 3) * 0.12;
-    armL = Math.PI * 0.85 + Math.sin(w * 3) * (0.85 * energy);
-    armR = Math.PI * 0.15 - Math.sin(w * 3 + Math.PI) * (0.85 * energy);
+    // Weight-bearing bounce: knees do most of the work, feet stay planted,
+    // hips/chest pump to the beat like a basic club bounce.
+    const squat = Math.abs(Math.sin(w * 3)) * (10 + beat * 16);
+    hipY = rd.baseY - squat * 0.3;
+    hipX = rd.baseX + Math.sin(w) * 5;
+    leanAngle = -Math.PI / 2 + Math.sin(w * 3) * 0.08;
+    armL = Math.PI * 0.85 + Math.sin(w * 3) * (0.8 * energy);
+    armR = Math.PI * 0.15 - Math.sin(w * 3 + Math.PI) * (0.8 * energy);
     elbowBendL = 0.5; elbowBendR = -0.5;
-    legL = Math.PI / 2 + Math.sin(w * 3) * 0.18;
-    legR = Math.PI / 2 + Math.sin(w * 3 + Math.PI) * 0.18;
-    kneeBendL = 0.15; kneeBendR = -0.15;
+    footLx = hipX - stance; footRx = hipX + stance;
+    footLy = floorY - squat * 0.55;
+    footRy = floorY - squat * 0.55;
   } else if (s === 'Robot') {
-    const step = Math.sign(Math.sin(w * 2.6)) || 1;
+    // Stiff side-to-side stepping: one foot lifts and plants while the
+    // other stays grounded, mechanical arm snaps.
+    const cyc = Math.sin(w * 2.2);
+    const step = cyc > 0 ? 1 : -1;
     hipX = rd.baseX + step * 10;
-    hipY = rd.baseY - 4;
-    leanAngle = -Math.PI / 2 + step * 0.1;
+    hipY = rd.baseY - 3;
+    leanAngle = -Math.PI / 2 + step * 0.08;
     armL = step > 0 ? -Math.PI * 0.5 : Math.PI * 0.85;
     armR = step > 0 ? Math.PI * 0.15 : -Math.PI * 0.35;
     elbowBendL = -0.9; elbowBendR = 0.9;
-    legL = Math.PI / 2 - step * 0.25;
-    legR = Math.PI / 2 + step * 0.25;
-    kneeBendL = step > 0 ? -0.5 : 0.05;
-    kneeBendR = step > 0 ? 0.05 : -0.5;
+    const lift = Math.max(0, Math.sin(w * 2.2)) * 22;
+    const lift2 = Math.max(0, -Math.sin(w * 2.2)) * 22;
+    footLx = hipX - stance - 4; footRx = hipX + stance + 4;
+    footLy = floorY - lift;
+    footRy = floorY - lift2;
   } else if (s === 'Wiggle') {
-    hipX = rd.baseX + Math.sin(w * 2) * (22 + beat * 10);
-    hipY = rd.baseY - Math.abs(Math.sin(w * 4)) * 6;
-    leanAngle = -Math.PI / 2 - Math.sin(w * 2) * 0.35;
+    // Feet planted, all the motion is in the hips/torso — a real wiggle
+    // keeps its base of support still.
+    hipX = rd.baseX + Math.sin(w * 2) * (18 + beat * 8);
+    hipY = rd.baseY - Math.abs(Math.sin(w * 4)) * 5;
+    leanAngle = -Math.PI / 2 - Math.sin(w * 2) * 0.3;
     armL = Math.PI * 0.7 - Math.sin(w * 2) * 0.3;
     armR = Math.PI * 0.3 - Math.sin(w * 2) * 0.3;
     elbowBendL = 0.35; elbowBendR = -0.35;
-    legL = Math.PI / 2 + Math.sin(w * 2) * 0.1;
-    legR = Math.PI / 2 - Math.sin(w * 2) * 0.1;
-    kneeBendL = 0.1; kneeBendR = -0.1;
-  } else { // Freestyle — layered frequencies so the crowd looks less synced
-    hipY = rd.baseY - Math.abs(Math.sin(w * 3.2)) * (14 + beat * 20);
-    hipX = rd.baseX + Math.sin(w * 1.3) * 14;
-    leanAngle = -Math.PI / 2 + Math.sin(w * 1.7) * 0.25;
+    footLx = rd.baseX - stance; footRx = rd.baseX + stance;
+  } else { // Freestyle — alternating foot taps/kicks, looser arms
+    hipY = rd.baseY - Math.abs(Math.sin(w * 3.2)) * (8 + beat * 12);
+    hipX = rd.baseX + Math.sin(w * 1.3) * 12;
+    leanAngle = -Math.PI / 2 + Math.sin(w * 1.7) * 0.2;
     armL = Math.PI * 0.75 + Math.sin(w * 3.4) * (1.0 * energy);
     armR = Math.PI * 0.25 + Math.cos(w * 2.9) * (1.0 * energy);
     elbowBendL = Math.sin(w * 4) * 0.6;
     elbowBendR = Math.cos(w * 3.3) * 0.6;
-    legL = Math.PI / 2 + Math.sin(w * 2.4) * 0.3;
-    legR = Math.PI / 2 + Math.cos(w * 2.1) * 0.3;
-    kneeBendL = Math.sin(w * 2.4) * 0.3;
-    kneeBendR = Math.cos(w * 2.1) * -0.3;
+    const liftL = Math.max(0, Math.sin(w * 2.4)) * 24;
+    const liftR = Math.max(0, -Math.sin(w * 2.1)) * 24;
+    footLx = hipX - stance + Math.sin(w * 2.4) * 8;
+    footRx = hipX + stance + Math.cos(w * 2.1) * 8;
+    footLy = floorY - liftL;
+    footRy = floorY - liftR;
   }
 
   const pull = 0.4;
@@ -294,15 +353,15 @@ function applyDance(rd, t) {
   const rHandT = polar(rElbowT, armR + elbowBendR, L.foreArm);
   driveToward(rd.pts.rHand, rHandT.x, rHandT.y, pull);
 
-  const lKneeT = polar(rd.pts.hip, legL, L.thigh);
+  // Legs use IK so the feet actually reach the target (usually the floor)
+  // instead of a fixed angle guess that can leave them hovering mid-air.
+  const lKneeT = solveKnee(rd.pts.hip.x, rd.pts.hip.y, footLx, footLy, L.thigh, L.shin, 1);
   driveToward(rd.pts.lKnee, lKneeT.x, lKneeT.y, pull);
-  const lFootT = polar(lKneeT, legL + kneeBendL, L.shin);
-  driveToward(rd.pts.lFoot, lFootT.x, lFootT.y, pull);
+  driveToward(rd.pts.lFoot, footLx, footLy, pull);
 
-  const rKneeT = polar(rd.pts.hip, legR, L.thigh);
+  const rKneeT = solveKnee(rd.pts.hip.x, rd.pts.hip.y, footRx, footRy, L.thigh, L.shin, -1);
   driveToward(rd.pts.rKnee, rKneeT.x, rKneeT.y, pull);
-  const rFootT = polar(rKneeT, legR + kneeBendR, L.shin);
-  driveToward(rd.pts.rFoot, rFootT.x, rFootT.y, pull);
+  driveToward(rd.pts.rFoot, footRx, footRy, pull);
 }
 
 // Pose targets are joint angles (radians) from each limb's origin, so the
@@ -319,7 +378,10 @@ function applyPose(rd) {
   const L = rd.lens;
   const pull = 0.18;
 
-  driveToward(rd.pts.hip, rd.baseX, rd.baseY, pull);
+  // SitDown drops the hips toward the floor instead of holding standing
+  // height with bent knees (which used to leave the figure hovering).
+  const hipY = rd.style === 'SitDown' ? rd.baseY + L.thigh * 0.55 : rd.baseY;
+  driveToward(rd.pts.hip, rd.baseX, hipY, pull);
   const neckT = polar(rd.pts.hip, -Math.PI / 2, L.spine);
   driveToward(rd.pts.neck, neckT.x, neckT.y, pull);
   const headT = polar(rd.pts.neck, -Math.PI / 2, L.neck);
@@ -516,9 +578,19 @@ function applyModeToAll() {
   }
 }
 
+// Double-clicking / double-tapping a tab collapses everything below the
+// top tab bar (count panel, chip row, options panel) so the stage isn't
+// covered. Using manual tap-timing (instead of the native 'dblclick'
+// event) because touch double-tap can be unreliable in WebViews.
+let lastTabTap = 0;
 document.getElementById('tabBar').addEventListener('click', (e) => {
   const btn = e.target.closest('.tab');
   if (!btn) return;
+
+  const now = Date.now();
+  const isDoubleTap = now - lastTabTap < 350;
+  lastTabTap = now;
+
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   btn.classList.add('active');
   state.tab = btn.dataset.tab;
@@ -528,6 +600,10 @@ document.getElementById('tabBar').addEventListener('click', (e) => {
 
   renderChips();
   applyModeToAll();
+
+  if (isDoubleTap) {
+    document.getElementById('app').classList.toggle('ui-collapsed');
+  }
 });
 
 document.getElementById('countSlider').addEventListener('input', (e) => {
