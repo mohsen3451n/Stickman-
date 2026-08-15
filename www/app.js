@@ -25,9 +25,18 @@ const state = {
   count: 3,
   tab: 'dance',
   style: { emote: 'Wave', dance: 'Bounce', pose: 'TPose' },
-  beat: 0,        // 0..1 pulsing value driven by music or fallback clock
+  beat: 0,          // 0..1 pulsing value driven by music or fallback clock
   beatClock: 0,
+  beatPulse: 0,     // sharp spike right on a detected hit, decays fast
+  beatCount: 0,
+  energy: 0.3,      // slow-moving overall loudness, 0..1
+  tempo: 120,       // estimated BPM from the loaded track
+  autoStyleTimer: 0,
 };
+
+let beatHistory = [];
+let lastBeatTime = 0;
+let bpmEstimate = 120;
 
 let ragdolls = [];
 let W = () => window.innerWidth;
@@ -193,9 +202,13 @@ function onResize() {
 function updateLocomotion(rd, dtSec) {
   const leftWall = WALL_MARGIN, rightWall = W() - WALL_MARGIN;
   const walk = rd.walk;
+  // Faster/louder song -> faster walking and a harder wall push.
+  const moveMul = analyser
+    ? Math.max(0.65, Math.min(2.0, (state.tempo / 120) * (0.7 + state.energy * 0.9)))
+    : 1;
 
   if (walk.state === 'walk') {
-    rd.baseX += rd.vx * dtSec;
+    rd.baseX += rd.vx * moveMul * dtSec;
     if (rd.vx < 0 && rd.baseX <= leftWall) {
       rd.baseX = leftWall;
       walk.state = 'push'; walk.timer = 0;
@@ -206,10 +219,10 @@ function updateLocomotion(rd, dtSec) {
       walk.wallX = rightWall + 30; walk.dir = -1;
     }
   } else if (walk.state === 'push') {
-    walk.timer += dtSec;
+    walk.timer += dtSec * Math.max(1, moveMul);
     if (walk.timer > 0.32) {
       walk.state = 'launch'; walk.timer = 0;
-      rd.vx = walk.dir * (130 + Math.random() * 60); // flung off the wall, fast
+      rd.vx = walk.dir * (130 + Math.random() * 60) * Math.max(1, moveMul * 0.7); // flung off the wall, fast
     }
   } else if (walk.state === 'launch') {
     rd.baseX += rd.vx * dtSec;
@@ -224,7 +237,7 @@ function updateLocomotion(rd, dtSec) {
     } else if (walk.timer > 0.55) {
       walk.state = 'walk';
       const sign = Math.sign(rd.vx) || walk.dir;
-      rd.vx = sign * Math.max(60, Math.min(Math.abs(rd.vx), 95));
+      rd.vx = sign * Math.max(60, Math.min(Math.abs(rd.vx), 95)) * Math.max(1, moveMul);
     }
   }
 }
@@ -308,8 +321,11 @@ function resolveInterRagdollCollisions() {
 // just enough spring left in the verlet solver for a soft ragdoll feel.
 function applyDance(rd, t) {
   const beat = state.beat;
-  const energy = 1.35 + beat * 1.3; // punchier baseline energy, even without music
-  const speed = rd.speed;
+  const energy = 1.1 + beat * 1.5 + state.energy * 1.1; // punchier baseline, scales with the song's loudness
+  // Movement tempo tracks the song's detected BPM when music is playing,
+  // so limbs visibly move faster on a fast song and slower on a slow one.
+  const tempoMul = analyser ? Math.max(0.6, Math.min(1.8, state.tempo / 120)) : 1;
+  const speed = rd.speed * tempoMul;
   const ph = rd.phase;
   const s = rd.style;
   const L = rd.lens;
@@ -614,9 +630,17 @@ function setupAudio(file) {
   sourceNode = audioCtx.createMediaElementSource(audioEl);
   analyser = audioCtx.createAnalyser();
   analyser.fftSize = 256;
+  analyser.smoothingTimeConstant = 0.3; // react quickly to individual hits
   freqData = new Uint8Array(analyser.frequencyBinCount);
   sourceNode.connect(analyser);
   analyser.connect(audioCtx.destination);
+
+  // fresh beat/tempo tracking for the new track
+  beatHistory = [];
+  lastBeatTime = 0;
+  bpmEstimate = 120;
+  state.beatCount = 0;
+  state.autoStyleTimer = 0;
 
   document.getElementById('musicName').textContent = file.name;
   audioEl.play();
@@ -626,20 +650,83 @@ function setupAudio(file) {
 function updateBeat() {
   if (analyser) {
     analyser.getByteFrequencyData(freqData);
-    // weight lower frequencies (bass) more heavily to approximate a beat
+    // Bass-weighted level, used to detect individual hits (kick/snare).
     let sum = 0, weight = 0;
     for (let i = 0; i < 24; i++) {
       const w = 24 - i;
       sum += freqData[i] * w;
       weight += w;
     }
-    const level = sum / weight / 255;
-    state.beat += (level - state.beat) * 0.35;
+    const bassLevel = sum / weight / 255;
+
+    // Overall loudness across the full spectrum — a slow-moving read on
+    // how "big" the song is right now, used to pick which dance style fits.
+    let total = 0;
+    for (let i = 0; i < freqData.length; i++) total += freqData[i];
+    const overall = total / freqData.length / 255;
+    state.energy += (overall - state.energy) * 0.04;
+
+    // Real onset detection: a "beat" is a bass spike well above its own
+    // recent rolling average, not just raw loudness. This is what makes
+    // the hit-poses land on the actual drum hits instead of drifting.
+    beatHistory.push(bassLevel);
+    if (beatHistory.length > 45) beatHistory.shift();
+    const avg = beatHistory.reduce((a, b) => a + b, 0) / beatHistory.length;
+    let varSum = 0;
+    for (const v of beatHistory) varSum += (v - avg) * (v - avg);
+    const spread = Math.sqrt(varSum / beatHistory.length);
+    const threshold = avg + spread * 1.25 + 0.045;
+
+    const now = performance.now();
+    if (bassLevel > threshold && now - lastBeatTime > 220) {
+      const interval = now - lastBeatTime;
+      if (lastBeatTime > 0 && interval < 1500) {
+        const instBPM = 60000 / interval;
+        // only trust plausible dance tempos, so one stray transient can't
+        // wreck the running estimate
+        if (instBPM > 60 && instBPM < 200) bpmEstimate += (instBPM - bpmEstimate) * 0.25;
+      }
+      lastBeatTime = now;
+      state.beatPulse = 1;
+      state.beatCount++;
+    }
+    state.beatPulse = Math.max(0, state.beatPulse - 0.07);
+    state.beat = Math.min(1, bassLevel * 0.5 + state.beatPulse * 0.85);
+    state.tempo = bpmEstimate;
   } else {
     // fallback: gentle synthetic pulse so dancing still looks alive without music
     state.beatClock += 0.05;
     state.beat = (Math.sin(state.beatClock) + 1) / 2 * 0.5;
+    state.energy += (0.3 - state.energy) * 0.02;
+    state.tempo = 120;
   }
+
+  autoStyleSwitch();
+}
+
+// While real music is playing, periodically pick a new dance style based
+// on how loud/energetic the song currently is — quiet section -> Wiggle,
+// building -> Robot, big/energetic -> Bounce or Freestyle. The switch
+// cadence itself speeds up or slows down with the detected tempo, so a
+// fast song cycles looks faster than a slow one.
+function autoStyleSwitch() {
+  if (!analyser || state.tab !== 'dance') return;
+  const secondsPerCycle = Math.max(3, 16 * (120 / Math.max(60, state.tempo)));
+  state.autoStyleTimer += 0.016;
+  if (state.autoStyleTimer < secondsPerCycle) return;
+  state.autoStyleTimer = 0;
+
+  const e = state.energy;
+  let pool;
+  if (e > 0.5) pool = ['Freestyle', 'Bounce'];
+  else if (e > 0.3) pool = ['Bounce', 'Robot'];
+  else pool = ['Wiggle', 'Robot'];
+  let next = pool[Math.floor(Math.random() * pool.length)];
+  if (next === state.style.dance && pool.length > 1) next = pool.find(s => s !== next) || next;
+
+  state.style.dance = next;
+  for (const rd of ragdolls) { if (rd.mode === 'dance') rd.style = next; }
+  renderChips();
 }
 
 // ---------------------------------------------------------
