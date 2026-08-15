@@ -33,6 +33,7 @@ let ragdolls = [];
 let W = () => window.innerWidth;
 let H = () => window.innerHeight;
 const FLOOR_MARGIN = 40;
+const WALL_MARGIN = 46; // how close a figure's hips get to the screen edge before it plants a hand and pushes off
 
 // ---------------------------------------------------------
 // Verlet primitives
@@ -99,6 +100,8 @@ function makeRagdoll(x, y, color) {
     emoteStart: 0,
     poseHold: 0,
     baseX: x, baseY: y + 70, // hip resting position, used as the dance anchor (fixed up below)
+    vx: (Math.random() < 0.5 ? -1 : 1) * (60 + Math.random() * 30), // px/sec roaming speed
+    walk: { state: 'walk', timer: 0, wallX: 0, dir: 1 },
     lens: {
       neck: dist(pts.head, pts.neck),
       spine: dist(pts.neck, pts.hip),
@@ -182,6 +185,50 @@ function onResize() {
   for (const rd of ragdolls) groundRagdoll(rd);
 }
 
+// Free-roaming walk: the dancer's stance (baseX) actually drifts across
+// the floor instead of staying pinned in one spot. When it reaches a
+// wall it plants a hand, pushes off, and launches back the other way —
+// state machine: 'walk' -> 'push' (braced against the wall) -> 'launch'
+// (flung off, fast) -> back to 'walk'.
+function updateLocomotion(rd, dtSec) {
+  const leftWall = WALL_MARGIN, rightWall = W() - WALL_MARGIN;
+  const walk = rd.walk;
+
+  if (walk.state === 'walk') {
+    rd.baseX += rd.vx * dtSec;
+    if (rd.vx < 0 && rd.baseX <= leftWall) {
+      rd.baseX = leftWall;
+      walk.state = 'push'; walk.timer = 0;
+      walk.wallX = leftWall - 30; walk.dir = 1;
+    } else if (rd.vx > 0 && rd.baseX >= rightWall) {
+      rd.baseX = rightWall;
+      walk.state = 'push'; walk.timer = 0;
+      walk.wallX = rightWall + 30; walk.dir = -1;
+    }
+  } else if (walk.state === 'push') {
+    walk.timer += dtSec;
+    if (walk.timer > 0.32) {
+      walk.state = 'launch'; walk.timer = 0;
+      rd.vx = walk.dir * (130 + Math.random() * 60); // flung off the wall, fast
+    }
+  } else if (walk.state === 'launch') {
+    rd.baseX += rd.vx * dtSec;
+    walk.timer += dtSec;
+    rd.vx *= 0.97; // speed bleeds off after the launch
+    if (rd.vx < 0 && rd.baseX <= leftWall) {
+      rd.baseX = leftWall; walk.state = 'push'; walk.timer = 0;
+      walk.wallX = leftWall - 30; walk.dir = 1;
+    } else if (rd.vx > 0 && rd.baseX >= rightWall) {
+      rd.baseX = rightWall; walk.state = 'push'; walk.timer = 0;
+      walk.wallX = rightWall + 30; walk.dir = -1;
+    } else if (walk.timer > 0.55) {
+      walk.state = 'walk';
+      const sign = Math.sign(rd.vx) || walk.dir;
+      rd.vx = sign * Math.max(60, Math.min(Math.abs(rd.vx), 95));
+    }
+  }
+}
+
 // ---------------------------------------------------------
 // Physics step
 // ---------------------------------------------------------
@@ -261,7 +308,7 @@ function resolveInterRagdollCollisions() {
 // just enough spring left in the verlet solver for a soft ragdoll feel.
 function applyDance(rd, t) {
   const beat = state.beat;
-  const energy = 1 + beat * 0.9;
+  const energy = 1.35 + beat * 1.3; // punchier baseline energy, even without music
   const speed = rd.speed;
   const ph = rd.phase;
   const s = rd.style;
@@ -270,9 +317,11 @@ function applyDance(rd, t) {
 
   const floorY = H() - FLOOR_MARGIN;
   const stance = 20; // half distance between the feet when standing
+  const walk = rd.walk;
+  const moveLean = Math.max(-1, Math.min(1, rd.vx / 90)) * 0.16; // lean slightly into the direction of travel while walking
 
   let hipX = rd.baseX, hipY = rd.baseY;
-  let leanAngle = -Math.PI / 2; // spine pointing up by default
+  let leanAngle = -Math.PI / 2 + moveLean; // spine pointing up by default
   let armL, armR, elbowBendL, elbowBendR;
   // Feet are given explicit world-space targets (not angles), so IK below
   // can plant them on the floor exactly instead of letting them float.
@@ -282,12 +331,12 @@ function applyDance(rd, t) {
   if (s === 'Bounce') {
     // Weight-bearing bounce: knees do most of the work, feet stay planted,
     // hips/chest pump to the beat like a basic club bounce.
-    const squat = Math.abs(Math.sin(w * 3)) * (10 + beat * 16);
+    const squat = Math.abs(Math.sin(w * 3)) * (16 + beat * 24) * (energy / 1.6);
     hipY = rd.baseY - squat * 0.3;
-    hipX = rd.baseX + Math.sin(w) * 5;
-    leanAngle = -Math.PI / 2 + Math.sin(w * 3) * 0.08;
-    armL = Math.PI * 0.85 + Math.sin(w * 3) * (0.8 * energy);
-    armR = Math.PI * 0.15 - Math.sin(w * 3 + Math.PI) * (0.8 * energy);
+    hipX = rd.baseX + Math.sin(w) * 8;
+    leanAngle += Math.sin(w * 3) * 0.12;
+    armL = Math.PI * 0.85 + Math.sin(w * 3) * (1.25 * energy);
+    armR = Math.PI * 0.15 - Math.sin(w * 3 + Math.PI) * (1.25 * energy);
     elbowBendL = 0.5; elbowBendR = -0.5;
     footLx = hipX - stance; footRx = hipX + stance;
     footLy = floorY - squat * 0.55;
@@ -295,65 +344,98 @@ function applyDance(rd, t) {
   } else if (s === 'Robot') {
     // Stiff side-to-side stepping: one foot lifts and plants while the
     // other stays grounded, mechanical arm snaps.
-    const cyc = Math.sin(w * 2.2);
+    const cyc = Math.sin(w * 2.6);
     const step = cyc > 0 ? 1 : -1;
-    hipX = rd.baseX + step * 10;
-    hipY = rd.baseY - 3;
-    leanAngle = -Math.PI / 2 + step * 0.08;
-    armL = step > 0 ? -Math.PI * 0.5 : Math.PI * 0.85;
-    armR = step > 0 ? Math.PI * 0.15 : -Math.PI * 0.35;
-    elbowBendL = -0.9; elbowBendR = 0.9;
-    const lift = Math.max(0, Math.sin(w * 2.2)) * 22;
-    const lift2 = Math.max(0, -Math.sin(w * 2.2)) * 22;
-    footLx = hipX - stance - 4; footRx = hipX + stance + 4;
+    hipX = rd.baseX + step * 15;
+    hipY = rd.baseY - 4;
+    leanAngle += step * 0.1;
+    armL = step > 0 ? -Math.PI * 0.55 : Math.PI * 0.9;
+    armR = step > 0 ? Math.PI * 0.1 : -Math.PI * 0.4;
+    elbowBendL = -1.0; elbowBendR = 1.0;
+    const lift = Math.max(0, Math.sin(w * 2.6)) * 32 * (energy / 1.6);
+    const lift2 = Math.max(0, -Math.sin(w * 2.6)) * 32 * (energy / 1.6);
+    footLx = hipX - stance - 6; footRx = hipX + stance + 6;
     footLy = floorY - lift;
     footRy = floorY - lift2;
   } else if (s === 'Wiggle') {
     // Feet planted, all the motion is in the hips/torso — a real wiggle
     // keeps its base of support still.
-    hipX = rd.baseX + Math.sin(w * 2) * (18 + beat * 8);
-    hipY = rd.baseY - Math.abs(Math.sin(w * 4)) * 5;
-    leanAngle = -Math.PI / 2 - Math.sin(w * 2) * 0.3;
-    armL = Math.PI * 0.7 - Math.sin(w * 2) * 0.3;
-    armR = Math.PI * 0.3 - Math.sin(w * 2) * 0.3;
-    elbowBendL = 0.35; elbowBendR = -0.35;
+    hipX = rd.baseX + Math.sin(w * 2.2) * (30 + beat * 16) * (energy / 1.6);
+    hipY = rd.baseY - Math.abs(Math.sin(w * 4.4)) * 9;
+    leanAngle += -Math.sin(w * 2.2) * 0.4;
+    armL = Math.PI * 0.7 - Math.sin(w * 2.2) * 0.45;
+    armR = Math.PI * 0.3 - Math.sin(w * 2.2) * 0.45;
+    elbowBendL = 0.4; elbowBendR = -0.4;
     footLx = rd.baseX - stance; footRx = rd.baseX + stance;
   } else { // Freestyle — big, snappy hype-dance hits: sharp lunges, driven
     // knees, fully-extended arm swings, punctuated with a wide pop pose.
     // Poses snap in fast then hold briefly, like a real dancer hitting a
     // beat, instead of smoothly oscillating.
-    const cycleLen = 1.05 / speed;
+    const cycleLen = 0.85 / speed;
     const localT = t + ph * 0.3;
     const idx = Math.floor(localT / cycleLen) % 4;
     const frac = (localT % cycleLen) / cycleLen;
-    const snap = Math.min(1, frac * 6); // fast ease-in, then holds the pose
+    const snap = Math.min(1, frac * 7); // fast ease-in, then holds the pose
 
     const KF = [
       // lunge right: left knee drives up, right leg planted, arms cross-swing
-      { lean: 0.5, armL: -1.95, armR: 0.55, elbowL: -0.6, elbowR: 0.5,
-        footL: { x: 4,   y: -36 }, footR: { x: 30, y: 0 } },
+      { lean: 0.55, armL: -1.95, armR: 0.55, elbowL: -0.6, elbowR: 0.5,
+        footL: { x: 4,   y: -40 }, footR: { x: 34, y: 0 } },
       // wide pop: both feet planted wide, arms thrown up and out
       { lean: 0, armL: -Math.PI * 0.7, armR: -Math.PI * 0.3, elbowL: -0.15, elbowR: 0.15,
-        footL: { x: -34, y: -6 }, footR: { x: 34, y: -6 } },
+        footL: { x: -38, y: -6 }, footR: { x: 38, y: -6 } },
       // lunge left: mirror of the first
-      { lean: -0.5, armL: -0.55, armR: 1.95, elbowL: -0.5, elbowR: 0.6,
-        footL: { x: -30, y: 0 }, footR: { x: -4, y: -36 } },
+      { lean: -0.55, armL: -0.55, armR: 1.95, elbowL: -0.5, elbowR: 0.6,
+        footL: { x: -34, y: 0 }, footR: { x: -4, y: -40 } },
       // low crouch hit: deep bend, head drops toward the front knee
-      { lean: 0.75, armL: -1.3, armR: 0.9, elbowL: -0.8, elbowR: 0.7,
-        footL: { x: 10, y: -8 }, footR: { x: 26, y: -6 } },
+      { lean: 0.8, armL: -1.3, armR: 0.9, elbowL: -0.8, elbowR: 0.7,
+        footL: { x: 12, y: -8 }, footR: { x: 28, y: -6 } },
     ];
     const k = KF[idx];
-    leanAngle = -Math.PI / 2 + k.lean * snap;
+    leanAngle = -Math.PI / 2 + moveLean + k.lean * snap;
     armL = k.armL * snap - Math.PI * 0.85 * (1 - snap);
     armR = k.armR * snap + Math.PI * 0.15 * (1 - snap);
     elbowBendL = k.elbowL; elbowBendR = k.elbowR;
-    hipX = rd.baseX + Math.sin(w * 1.1) * 6;
-    hipY = rd.baseY - snap * (idx === 1 ? 12 : 4) * energy;
+    hipX = rd.baseX + Math.sin(w * 1.1) * 8;
+    hipY = rd.baseY - snap * (idx === 1 ? 16 : 6) * (energy / 1.6);
     footLx = hipX + k.footL.x * snap; footLy = floorY + k.footL.y * snap;
     footRx = hipX + k.footR.x * snap; footRy = floorY + k.footR.y * snap;
   }
 
-  const pull = 0.4;
+  // --- Wall push-off overlay: plant a hand on the wall and brace, then on
+  // launch throw the body and trailing limbs in the direction of flight.
+  // Layered on top of whichever dance style is active, so it works the
+  // same for all of them.
+  if (walk.state === 'push') {
+    const p = Math.min(1, walk.timer / 0.32);
+    const brace = Math.sin(p * Math.PI * 0.5); // eases in and holds
+    const wallOnLeft = walk.wallX < rd.baseX;
+    const reachAngle = wallOnLeft ? Math.PI : 0;
+    const reachLen = (L.upperArm + L.foreArm) * 0.94;
+    const reachHand = polar(rd.pts.neck, reachAngle, reachLen);
+    leanAngle += (wallOnLeft ? -1 : 1) * 0.35 * brace;
+    hipX += (wallOnLeft ? 1 : -1) * 10 * brace;
+    hipY = rd.baseY + 6 * brace; // braced, slight crouch
+    if (wallOnLeft) { armL = reachAngle; elbowBendL = 0; }
+    else { armR = reachAngle; elbowBendR = 0; }
+    // the bracing arm's target is set directly below (bypasses the polar chain)
+    walk.braceHand = reachHand;
+    walk.braceSide = wallOnLeft ? 'L' : 'R';
+  } else if (walk.state === 'launch') {
+    const p = Math.min(1, walk.timer / 0.55);
+    const kick = 1 - p; // strongest right after the launch, fades out
+    const dir = Math.sign(rd.vx) || walk.dir;
+    leanAngle += dir * 0.5 * kick;
+    hipY = rd.baseY - 10 * kick;
+    if (dir > 0) { armL = Math.PI * 0.75; armR = -0.15; }
+    else { armR = Math.PI * 0.25; armL = Math.PI + 0.15; }
+    footLx -= dir * 20 * kick; footRx -= dir * 20 * kick;
+    walk.braceHand = null;
+  } else {
+    walk.braceHand = null;
+  }
+
+  const pull = 0.46;
   driveToward(rd.pts.hip, hipX, hipY, pull);
 
   const neckTarget = polar(rd.pts.hip, leanAngle, L.spine);
@@ -364,12 +446,12 @@ function applyDance(rd, t) {
 
   const lElbowT = polar(rd.pts.neck, armL, L.upperArm);
   driveToward(rd.pts.lElbow, lElbowT.x, lElbowT.y, pull);
-  const lHandT = polar(lElbowT, armL + elbowBendL, L.foreArm);
+  const lHandT = walk.braceHand && walk.braceSide === 'L' ? walk.braceHand : polar(lElbowT, armL + elbowBendL, L.foreArm);
   driveToward(rd.pts.lHand, lHandT.x, lHandT.y, pull);
 
   const rElbowT = polar(rd.pts.neck, armR, L.upperArm);
   driveToward(rd.pts.rElbow, rElbowT.x, rElbowT.y, pull);
-  const rHandT = polar(rElbowT, armR + elbowBendR, L.foreArm);
+  const rHandT = walk.braceHand && walk.braceSide === 'R' ? walk.braceHand : polar(rElbowT, armR + elbowBendR, L.foreArm);
   driveToward(rd.pts.rHand, rHandT.x, rHandT.y, pull);
 
   // Legs use IK so the feet actually reach the target (usually the floor)
@@ -471,7 +553,7 @@ function frame(now) {
   for (const rd of ragdolls) {
     integrate(rd.pts, 0.985);
 
-    if (rd.mode === 'dance') applyDance(rd, clock);
+    if (rd.mode === 'dance') { updateLocomotion(rd, 0.016 * dt); applyDance(rd, clock); }
     else if (rd.mode === 'pose') applyPose(rd);
     else if (rd.mode === 'emote') applyEmote(rd, clock);
 
